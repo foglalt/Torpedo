@@ -1,0 +1,6 @@
+﻿  torpedo.cpp
+C:\Saját\progi\torpedo\torpedo\torpedo.cpp(126,12): warning C4477: 'printf' : format string '%x' requires an argument of type 'unsigned int', but variadic argument 1 has type 'ship_t *'
+C:\Saját\progi\torpedo\torpedo\torpedo.cpp(126,12): warning C4313: 'printf': '%x' in format string conflicts with argument 1 of type 'ship_t *'
+C:\Saját\progi\torpedo\torpedo\torpedo.cpp(654,23): warning C4244: 'argument': conversion from 'time_t' to 'unsigned int', possible loss of data
+C:\Saját\progi\torpedo\torpedo\torpedo.cpp(678,23): warning C4244: 'argument': conversion from 'time_t' to 'unsigned int', possible loss of data
+  torpedo.vcxproj -> C:\Saját\progi\torpedo\x64\Debug\torpedo.exe
