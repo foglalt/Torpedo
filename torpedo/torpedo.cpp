@@ -3,11 +3,10 @@
 #include <time.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdbool.h>
 
-#if (defined _WIN32 || defined _WIN64)
-    #include <Windows.h>   
-#else
-    #error "Not on windows, can't compile"
+#if defined(_WIN32) || defined(_WIN64)
+#include <Windows.h>
 #endif
 
 #define ASSERT(x) if(!(x)) { printf("ERROR in file %s, line: %d: %s", __FILE__, __LINE__, #x); exit(-1); }
@@ -41,11 +40,15 @@ static int map_shot2[STORAGE_SIZE];
 #define SHIP_TYPES 4
 #define SHIP_NUMBER (SHIP_L4 + SHIP_L3 + SHIP_L2 + SHIP_L1)
 
-static int SHIP_COUNTS[SHIP_TYPES] = { SHIP_L1, SHIP_L2, SHIP_L3, SHIP_L4 };
-static int SHIP_COUNTS2[SHIP_TYPES] = { SHIP_L1, SHIP_L2, SHIP_L3, SHIP_L4 };
+static const int SHIP_TEMPLATE[SHIP_TYPES] = { SHIP_L1, SHIP_L2, SHIP_L3, SHIP_L4 };
+static int player_ships_to_place[SHIP_TYPES];
+static int player_ships_remaining[SHIP_TYPES];
+static int enemy_ships_remaining[SHIP_TYPES];
 
-HANDLE hConsole;
-void ClearScreen()
+#if defined(_WIN32) || defined(_WIN64)
+static HANDLE hConsole;
+
+static void ClearScreen(void)
 {
     COORD coord = { 0, 0 };
     DWORD count;
@@ -56,7 +59,7 @@ void ClearScreen()
     SetConsoleCursorPosition(hConsole, coord);
 }
 
-void GoToXY(int x, int y)
+static void GoToXY(int x, int y)
 {
     COORD coord;
     coord.X = x;
@@ -64,24 +67,19 @@ void GoToXY(int x, int y)
 
     SetConsoleCursorPosition(hConsole, coord);
 }
-
-void GetConsoleSize(int* rows, int* cols)
+#else
+static void ClearScreen(void)
 {
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
-    GetConsoleScreenBufferInfo(hConsole, &csbi);
-    *rows = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
-    *cols = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+    printf("\033[2J\033[H");
+    fflush(stdout);
 }
 
-int ShipsLeft()
+static void GoToXY(int x, int y)
 {
-    int total = 0;
-    for (int i = 0; i < SHIP_TYPES; i++)
-    {
-        total += SHIP_COUNTS2[i];
-    }
-    return total;
+    printf("\033[%d;%dH", y + 1, x + 1);
+    fflush(stdout);
 }
+#endif
 
 typedef struct ship
 {
@@ -94,6 +92,13 @@ typedef struct ship
     unsigned char direction : 1;
     unsigned char length : 2;
 } ship_t;
+
+typedef enum
+{
+    GAME_CONTINUES = 0,
+    PLAYER_WON,
+    AI_WON
+} game_state_t;
 
 int length(ship_t* ship)
 {
@@ -108,28 +113,46 @@ static ship_t ships[SHIP_NUMBER];
 static int last_ship2 = 0;
 static ship_t ships2[SHIP_NUMBER];
 
-int GameState()
+static game_state_t GameState(void)
 {
+    bool player_has_ships = false;
+    bool enemy_has_ships = false;
+
     for (int i = 0; i < SHIP_NUMBER; i++)
     {
+        if (ships[i].exists)
+        {
+            player_has_ships = true;
+        }
+
         if (ships2[i].exists)
         {
-            return 0;
+            enemy_has_ships = true;
         }
     }
 
-    return 1;
+    if (!enemy_has_ships)
+    {
+        return PLAYER_WON;
+    }
+
+    if (!player_has_ships)
+    {
+        return AI_WON;
+    }
+
+    return GAME_CONTINUES;
 }
 
 void DebugShip(ship_t* ship)
 {
-    printf("Ship at 0x%x\n", ship);
+    printf("Ship at %p\n", (void*)ship);
     printf("\tat (%d,%d), direction: %s\n", ship->x, ship->y, ship->direction ? "vertical" : "horizontal");
     printf("\tlength: %d\n", ship->length + 1);
     printf("\tstate is %x, exists: %d\n", ship->state, ship->exists);
 }
 
-//-1 -> nincs a hajÛban, ha 0-3, az az index
+//-1 -> nincs a haj√≥ban, ha 0-3, az az index
 int InShip(ship_t* ship, int x, int y)
 {
     if (ship->direction)
@@ -182,7 +205,7 @@ int GetState(int col, int row, int* array)
     int index = row * COLS + col;
     int i = (index / INT_BITS);
     int j = (index % INT_BITS);
-    return ((array[i] & (0x1 << j)) >> j) & 0x1; //0-t vagy 1-et ad vissza = nem tal·lt vagy de
+    return ((array[i] & (0x1 << j)) >> j) & 0x1; //0-t vagy 1-et ad vissza = nem tal√°lt vagy de
 }
 
 void SetState(int col, int row, int* array)
@@ -193,7 +216,7 @@ void SetState(int col, int row, int* array)
     int index = row * COLS + col;
     int i = (index / INT_BITS);
     int j = (index % INT_BITS);
-    array[i] |= (0x1 << j); //bitj·tÈkok
+    array[i] |= (0x1 << j); //bitj√°t√©kok
 }
 
 int Check(int x, int y, int width, int height, int* array)
@@ -323,7 +346,7 @@ void GetShip(int length)
 
         if (ok)
         {
-            SHIP_COUNTS[length - 1]--;
+            player_ships_to_place[length - 1]--;
             printf("The ship has set sail!\n");
         }
         else
@@ -407,9 +430,9 @@ void PlaceShips()
     {
         length = i + 1;
         
-        while (SHIP_COUNTS[i] != 0)
+        while (player_ships_to_place[i] != 0)
         {
-            printf("You have %d ships left of length %d", SHIP_COUNTS[i] , length);
+            printf("You have %d ships left of length %d\n", player_ships_to_place[i], length);
             print_map(map);
             GetShip(length);
             ClearScreen();
@@ -467,342 +490,552 @@ void PrintDiscovered(int* map2, int* shot2, int x, int y)
     }
 }
 
-void RandomPlaceShip(int length, int* array)
+static void RandomPlaceShip(int length, int* array)
 {
-    static int dr = 0;
-    dr = ~dr;
-    /*if (length > 1)
+    bool placed = false;
+
+    while (!placed)
     {
-        srand(time(NULL));
-        dr = (rand() + (unsigned)time(NULL)) & 0x1;
-    }*/
-    int x, y, ok;
-    do
-    {
-        if (dr)
+        int vertical = (length > 1) ? rand() % 2 : 0;
+        int x;
+        int y;
+
+        if (vertical)
         {
-            x = (rand() % 10) + 1;
-            y = (rand() % (11 - length)) + 1;
-            ok = Check(x - 2, y - 2, 3, length + 2, array) == 0;
+            x = rand() % COLS;
+            y = rand() % (ROWS - length + 1);
+            if (Check(x - 1, y - 1, 3, length + 2, array) != 0)
+            {
+                continue;
+            }
+
+            for (int k = 0; k < length; ++k)
+            {
+                SetState(x, y + k, array);
+            }
         }
         else
         {
-            x = (rand() % (11 - length)) + 1;
-            y = (rand() % 10) + 1;
-            ok = Check(x - 2, y - 2, length + 2, 3, array) == 0;
-        }
-    } while (!ok);
+            x = rand() % (COLS - length + 1);
+            y = rand() % ROWS;
+            if (Check(x - 1, y - 1, length + 2, 3, array) != 0)
+            {
+                continue;
+            }
 
-    if (dr)
-    {
-        for (int k = y; k < y + length; k++)
+            for (int k = 0; k < length; ++k)
+            {
+                SetState(x + k, y, array);
+            }
+        }
+
+        int state = 0;
+        if (length != 4)
         {
-            SetState(x - 1, k - 1, array);
+            for (int i = 0; i < 4 - length; i++)
+            {
+                state |= 0x1 << i;
+            }
         }
-    }
-    else
-    {
-        for (int k = x; k < x + length; k++)
-        {
-            SetState(k - 1, y - 1, array);
-        }
-    }
 
-    int state = 0;
-    if (length != 4)
-    {
-        for (int i = 0; i < 4 - length; i++)
-        {
-            state |= 0x1 << i; //ez miez?
-        }
-    }
+        ship_t ship;
+        memset(&ship, 0, sizeof(ship_t));
+        ship.exists = 1;
+        ship.length = length - 1;
+        ship.direction = vertical;
+        ship.state = state;
+        ship.x = x;
+        ship.y = y;
 
-    ship_t ship;
-    memset(&ship, 0, sizeof(ship_t));
-    ship.exists = 1;
-    ship.length = length - 1;
-    ship.direction = dr;
-    ship.state = state;
-    ship.x = x - 1;
-    ship.y = y - 1;
-
-    ships2[last_ship2++] = ship;
-}
-
-void GenerateRandomMap(int* map)
-{
-    int length;
-    for (int i = 0; i < SHIP_TYPES; i++)
-    {
-        length = i + 1;
-        while (SHIP_COUNTS2[i] != 0)
-        {
-            RandomPlaceShip(length, map);
-            SHIP_COUNTS2[i]--;
-        }
-        SHIP_COUNTS2[i] = SHIP_TYPES - i;
+        ships2[last_ship2++] = ship;
+        placed = true;
     }
 }
 
-ship_t* Hit(int x, int y, int* arr)
+static void GenerateRandomMap(int* target_map)
 {
-    ship_t* hit = 0;
+    memset(target_map, 0, sizeof(int) * STORAGE_SIZE);
+    memset(ships2, 0, sizeof(ships2));
+    last_ship2 = 0;
+
+    for (int i = 0; i < SHIP_TYPES; ++i)
+    {
+        int length = i + 1;
+        int count = SHIP_TEMPLATE[i];
+
+        while (count-- > 0)
+        {
+            RandomPlaceShip(length, target_map);
+        }
+    }
+
+    memcpy(enemy_ships_remaining, SHIP_TEMPLATE, sizeof(enemy_ships_remaining));
+}
+
+static ship_t* HitShip(ship_t* fleet, int* remaining_counts, int x, int y, int* shots)
+{
     for (int i = 0; i < SHIP_NUMBER; i++)
     {
-        ship_t* tmp = &ships2[i];
-        if (tmp->exists)
+        ship_t* tmp = &fleet[i];
+        if (!tmp->exists)
         {
-            int idx = InShip(tmp, x, y);
-            if (idx > -1)
+            continue;
+        }
+
+        int idx = InShip(tmp, x, y);
+        if (idx > -1)
+        {
+            tmp->state |= (0x1 << (3 - idx));
+
+            if ((tmp->state & SHIP_DESTROYED_MASK) == SHIP_DESTROYED_MASK)
             {
-                hit = tmp;
-                hit->state |= (0x1 << (3 - idx));
-                break;
+                tmp->exists = 0;
+                if (remaining_counts)
+                {
+                    ASSERT(tmp->length < SHIP_TYPES);
+                    remaining_counts[tmp->length]--;
+                }
+
+                if (shots)
+                {
+                    if (tmp->direction)
+                    {
+                        RevealSurroundings(tmp->x - 1, tmp->y - 1, 3, length(tmp) + 2, shots);
+                    }
+                    else
+                    {
+                        RevealSurroundings(tmp->x - 1, tmp->y - 1, length(tmp) + 2, 3, shots);
+                    }
+                }
+            }
+
+            return tmp;
+        }
+    }
+
+    return NULL;
+}
+
+static int Shoot(int x, int y, int* map, int* shot);
+
+enum
+{
+    DIR_RIGHT = 0,
+    DIR_LEFT = 1,
+    DIR_UP = 2,
+    DIR_DOWN = 3
+};
+
+static const int DIRECTION_DELTAS[4][2] = {
+    { 1, 0 },
+    { -1, 0 },
+    { 0, -1 },
+    { 0, 1 }
+};
+
+typedef enum
+{
+    AI_STATE_NO_TARGET = 0,
+    AI_STATE_SEEK,
+    AI_STATE_HORIZONTAL,
+    AI_STATE_VERTICAL
+} ai_mode_t;
+
+typedef struct
+{
+    ai_mode_t state;
+    int origin_col;
+    int origin_row;
+    int last_col;
+    int last_row;
+    int direction;
+    int alternate_direction;
+    int directions_order[4];
+    int directions_index;
+} ai_memory_t;
+
+static ai_memory_t ai_memory = { AI_STATE_NO_TARGET, -1, -1, -1, -1, -1, -1, { 0, 1, 2, 3 }, 0 };
+
+static int OppositeDirection(int direction)
+{
+    switch (direction)
+    {
+    case DIR_RIGHT:
+        return DIR_LEFT;
+    case DIR_LEFT:
+        return DIR_RIGHT;
+    case DIR_UP:
+        return DIR_DOWN;
+    case DIR_DOWN:
+        return DIR_UP;
+    default:
+        return direction;
+    }
+}
+
+static void ResetAiMemory(void)
+{
+    ai_memory.state = AI_STATE_NO_TARGET;
+    ai_memory.origin_col = -1;
+    ai_memory.origin_row = -1;
+    ai_memory.last_col = -1;
+    ai_memory.last_row = -1;
+    ai_memory.direction = -1;
+    ai_memory.alternate_direction = -1;
+    ai_memory.directions_index = 0;
+
+    for (int i = 0; i < 4; ++i)
+    {
+        ai_memory.directions_order[i] = i;
+    }
+}
+
+static void ShuffleDirections(int directions[4])
+{
+    for (int i = 0; i < 4; ++i)
+    {
+        directions[i] = i;
+    }
+
+    for (int i = 3; i > 0; --i)
+    {
+        int j = rand() % (i + 1);
+        int tmp = directions[i];
+        directions[i] = directions[j];
+        directions[j] = tmp;
+    }
+}
+
+static bool IsValidCellCoord(int col, int row)
+{
+    return col >= 0 && col < COLS && row >= 0 && row < ROWS;
+}
+
+static bool AlreadyShot(int col, int row, int* shot_map)
+{
+    return GetState(col, row, shot_map) != 0;
+}
+
+static bool PickRandomUnshotCell(int* col, int* row, int* shot_map)
+{
+    for (int attempt = 0; attempt < CELLS * 2; ++attempt)
+    {
+        int index = rand() % CELLS;
+        int candidate_col = index % COLS;
+        int candidate_row = index / COLS;
+
+        if (!AlreadyShot(candidate_col, candidate_row, shot_map))
+        {
+            *col = candidate_col;
+            *row = candidate_row;
+            return true;
+        }
+    }
+
+    for (int r = 0; r < ROWS; ++r)
+    {
+        for (int c = 0; c < COLS; ++c)
+        {
+            if (!AlreadyShot(c, r, shot_map))
+            {
+                *col = c;
+                *row = r;
+                return true;
             }
         }
     }
 
+    return false;
+}
+
+static int AiShootAt(int col, int row, ship_t** ship)
+{
+    if (!IsValidCellCoord(col, row) || AlreadyShot(col, row, map_shot))
+    {
+        return -1;
+    }
+
+    int hit = Shoot(col, row, map, map_shot);
     if (hit)
     {
-        if ((hit->state & SHIP_DESTROYED_MASK) == SHIP_DESTROYED_MASK)
-        {
-            SHIP_COUNTS2[hit->length]--;
-            hit->exists = 0;
-            if (hit->direction)
-            {
-                RevealSurroundings(hit->x - 1, hit->y - 1, 3, length(hit) + 2, arr);
-            }
-            else
-            {
-                RevealSurroundings(hit->x - 1, hit->y - 1, length(hit) + 2, 3, arr);
-            }
-        }
+        *ship = HitShip(ships, player_ships_remaining, col, row, map_shot);
+    }
+    else
+    {
+        *ship = NULL;
     }
 
     return hit;
 }
 
-int Shoot(int x, int y, int* map, int* shot)
+static void AiHandleNoTarget(void)
 {
-    int hit = 0;
-    if (!GetState(x, y, shot) && GetState(x, y, map))
+    int col;
+    int row;
+
+    if (!PickRandomUnshotCell(&col, &row, map_shot))
     {
-        Hit(x, y, shot);
-        hit = 1;
+        return;
     }
-    SetState(x, y, shot);
-    return hit;
+
+    ship_t* ship = NULL;
+    int result = AiShootAt(col, row, &ship);
+    if (result == 1 && ship)
+    {
+        if (ship->exists)
+        {
+            ai_memory.state = AI_STATE_SEEK;
+            ai_memory.origin_col = col;
+            ai_memory.origin_row = row;
+            ai_memory.last_col = col;
+            ai_memory.last_row = row;
+            ShuffleDirections(ai_memory.directions_order);
+            ai_memory.directions_index = 0;
+        }
+        else
+        {
+            ResetAiMemory();
+        }
+    }
 }
 
-char GetDirections(int x, int y, int* map_shot)
+static void AiHandleSeek(void)
 {
-    char d = 0b1111;//le, bal, fel, jobb
-    if (x == 0)
+    while (ai_memory.directions_index < 4)
     {
-        d &= 0b1011;
-    }
-    else
-    {
-        d &= (0b1011 | ((GetState(x - 1, y, map_shot) & 0x1) << 2));
-    }
+        int dir = ai_memory.directions_order[ai_memory.directions_index];
+        int next_col = ai_memory.origin_col + DIRECTION_DELTAS[dir][0];
+        int next_row = ai_memory.origin_row + DIRECTION_DELTAS[dir][1];
 
-    if (x == 9)
-    {
-        d &= 0b1110;
-    }
-    else
-    {
-        d &= (0b1110 | ((GetState(x + 1, y, map_shot) & 0x1) << 0));
-    }
-
-    if (y == 0)
-    {
-        d &= 0b0111;
-    }
-    else
-    {
-        d &= (0b0111 | ((GetState(x, y - 1, map_shot) & 0x1) << 3));
-    }
-
-    if (y == 9)
-    {
-        d &= 0b1101;
-    }
-    else
-    {
-        d &= (0b1101 | GetState(x, y + 1, map_shot) << 1);
-    }
-    
-    return d;
-}
-
-#define NO_TARGET 0
-#define RANDOM 1
-#define HORIZONTAL 2
-#define VERTICAL 3
-void RandomShooting()
-{
-    static int shoot_state = NO_TARGET;
-    static int index = -1, x = -1, y = -1;
-    static int beginX, beginY;
-
-    if (shoot_state == NO_TARGET)
-    {
-        //shoot, if hit, random
-        do
+        if (!IsValidCellCoord(next_col, next_row) || AlreadyShot(next_col, next_row, map_shot))
         {
-            srand(time(NULL));
-            index = rand() % CELLS;
-            x = index / ROWS;
-            y = index % ROWS;
-            beginX = x;
-            beginY = y;
-        } while (!GetState(x, y, map_shot));
-
-        ship_t* ship = Hit(x, y, map);
-        SetState(x, y, map_shot);
-        if (ship && ship->exists)
-        {
-            shoot_state = RANDOM;
+            ai_memory.directions_index++;
+            continue;
         }
-    }
-    else if (shoot_state == RANDOM)
-    {
-        static char directions_shot = 0;
 
-        char possible_direction = GetDirections(beginX, beginY, map_shot);
-
-        int direction;
-        do
+        ship_t* ship = NULL;
+        int result = AiShootAt(next_col, next_row, &ship);
+        if (result == 1 && ship)
         {
-            srand(time(NULL));
-            direction = rand() % 4;
-            if (!(0x1 << direction & possible_direction))
+            if (ship->exists)
             {
-                direction = -1;
-            }
-
-        } while (direction == -1 || (directions_shot & (0x1 << direction)));
-
-        if (direction == 0)
-        {
-            ship_t* ship = Hit(x + 1, y, map);
-            SetState(x + 1, y, map_shot);
-            if (ship && ship->exists)
-            {
-                shoot_state = HORIZONTAL;
+                ai_memory.direction = dir;
+                ai_memory.alternate_direction = OppositeDirection(dir);
+                ai_memory.last_col = next_col;
+                ai_memory.last_row = next_row;
+                ai_memory.state = (dir == DIR_RIGHT || dir == DIR_LEFT) ? AI_STATE_HORIZONTAL : AI_STATE_VERTICAL;
             }
             else
             {
-                shoot_state = NO_TARGET;
-            }
-        }
-        else if (direction == 1)
-        {
-            ship_t* ship = Hit(x, y - 1, map);
-            SetState(x, y - 1, map_shot);
-            if (ship && ship->exists)
-            {
-                shoot_state = VERTICAL;
-            }
-            else
-            {
-                shoot_state = NO_TARGET;
-            }
-        }
-        else if (direction == 2)
-        {
-            ship_t* ship = Hit(x - 1, y, map);
-            SetState(x - 1, y, map_shot);
-            if (ship && ship->exists)
-            {
-                shoot_state = HORIZONTAL;
-            }
-            else
-            {
-                shoot_state = NO_TARGET;
+                ResetAiMemory();
             }
         }
         else
         {
-            ship_t* ship = Hit(x, y + 1, map);
-            SetState(x, y + 1, map_shot);
-            if (ship && ship->exists)
-            {
-                shoot_state = VERTICAL;
-            }
-            else
-            {
-                shoot_state = NO_TARGET;
-            }
+            ai_memory.directions_index++;
         }
-        //shoot 4 dirs, if hit, select dir
-    }
-    else if (shoot_state == HORIZONTAL)
-    {
 
+        return;
+    }
+
+    ResetAiMemory();
+}
+
+static void AiHandleLine(void)
+{
+    if (ai_memory.direction < 0)
+    {
+        ResetAiMemory();
+        return;
+    }
+
+    int dir = ai_memory.direction;
+    int next_col = ai_memory.last_col + DIRECTION_DELTAS[dir][0];
+    int next_row = ai_memory.last_row + DIRECTION_DELTAS[dir][1];
+
+    if (!IsValidCellCoord(next_col, next_row) || AlreadyShot(next_col, next_row, map_shot))
+    {
+        dir = ai_memory.alternate_direction;
+        ai_memory.direction = dir;
+        ai_memory.alternate_direction = OppositeDirection(dir);
+        ai_memory.last_col = ai_memory.origin_col;
+        ai_memory.last_row = ai_memory.origin_row;
+        next_col = ai_memory.last_col + DIRECTION_DELTAS[dir][0];
+        next_row = ai_memory.last_row + DIRECTION_DELTAS[dir][1];
+
+        if (!IsValidCellCoord(next_col, next_row) || AlreadyShot(next_col, next_row, map_shot))
+        {
+            ResetAiMemory();
+            return;
+        }
+    }
+
+    ship_t* ship = NULL;
+    int result = AiShootAt(next_col, next_row, &ship);
+    if (result == 1 && ship)
+    {
+        if (ship->exists)
+        {
+            ai_memory.last_col = next_col;
+            ai_memory.last_row = next_row;
+        }
+        else
+        {
+            ResetAiMemory();
+        }
     }
     else
     {
-
+        ai_memory.direction = ai_memory.alternate_direction;
+        ai_memory.alternate_direction = OppositeDirection(ai_memory.direction);
+        ai_memory.last_col = ai_memory.origin_col;
+        ai_memory.last_row = ai_memory.origin_row;
     }
-    switch (shoot_state)
-    {
-    case NO_TARGET:
-        
-
-        break;
-    case RANDOM:
-        
-        break;
-    case HORIZONTAL:
-
-        //LEFT, RIGHT
-        break;
-    case VERTICAL:
-        //UP, DOWN
-        break;
-    }
-
 }
 
-void Draw()
+static int Shoot(int x, int y, int* map, int* shot)
+{
+    if (GetState(x, y, shot))
+    {
+        return 0;
+    }
+
+    SetState(x, y, shot);
+
+    if (GetState(x, y, map))
+    {
+        return 1;
+    }
+
+    return 0;
+}
+
+static void RandomShooting(void)
+{
+    switch (ai_memory.state)
+    {
+    case AI_STATE_NO_TARGET:
+        AiHandleNoTarget();
+        break;
+    case AI_STATE_SEEK:
+        AiHandleSeek();
+        break;
+    case AI_STATE_HORIZONTAL:
+    case AI_STATE_VERTICAL:
+        AiHandleLine();
+        break;
+    }
+}
+
+static void Draw(void)
 {
     ClearScreen();
     PrintDiscovered(map2, map_shot2, 0, 0);
     PrintDiscovered(map, map_shot, 60, 0);
-    memset(map_shot, 0xFF, sizeof(int) * STORAGE_SIZE);
-    int rows, cols;
-    GetConsoleSize(&rows, &cols);
-    
-    for (int i = 0; i < SHIP_TYPES; i++)
+
+    GoToXY(0, ROWS + 2);
+    printf("Enemy fleet remaining:\n");
+    for (int i = 0; i < SHIP_TYPES; ++i)
     {
-        GoToXY(cols - 20, i);
-        printf("Length %d : %d left\n", i + 1, SHIP_COUNTS2[i]);
+        printf("  Length %d: %d\n", i + 1, enemy_ships_remaining[i]);
     }
-    GoToXY(0, 11);
+
+    printf("\nYour fleet remaining:\n");
+    for (int i = 0; i < SHIP_TYPES; ++i)
+    {
+        printf("  Length %d: %d\n", i + 1, player_ships_remaining[i]);
+    }
+
+    printf("\n");
+    fflush(stdout);
 }
 
 int main(int argc, char* argv[])
 {
+#if defined(_WIN32) || defined(_WIN64)
     hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+#endif
+
+    srand((unsigned int)time(NULL));
+
+    memset(map, 0, sizeof(map));
+    memset(map_shot, 0, sizeof(map_shot));
+    memset(map2, 0, sizeof(map2));
+    memset(map_shot2, 0, sizeof(map_shot2));
+    memset(ships, 0, sizeof(ships));
+    memset(ships2, 0, sizeof(ships2));
+    last_ship = 0;
+    last_ship2 = 0;
+    ResetAiMemory();
+
+    memcpy(player_ships_to_place, SHIP_TEMPLATE, sizeof(player_ships_to_place));
+    memcpy(player_ships_remaining, SHIP_TEMPLATE, sizeof(player_ships_remaining));
+
     PlaceShips();
+    memcpy(player_ships_remaining, SHIP_TEMPLATE, sizeof(player_ships_remaining));
+
     GenerateRandomMap(map2);
 
-    int x, y;
-    while (!GameState())
+    game_state_t state = GAME_CONTINUES;
+
+    while ((state = GameState()) == GAME_CONTINUES)
     {
         Draw();
 
-        while (!GetCoordinates(&x, &y));
-        Shoot(x - 1, y - 1, map2, map_shot2);
+        int x = 0;
+        int y = 0;
+        int col = 0;
+        int row = 0;
+
+        while (1)
+        {
+            printf("Enter target coordinates (e.g. A5): ");
+            fflush(stdout);
+
+            if (!GetCoordinates(&x, &y))
+            {
+                printf("Invalid coordinates. Try again.\n");
+                continue;
+            }
+
+            col = x - 1;
+            row = y - 1;
+
+            if (GetState(col, row, map_shot2))
+            {
+                printf("You already fired at that location. Try again.\n");
+                continue;
+            }
+
+            break;
+        }
+
+        if (Shoot(col, row, map2, map_shot2))
+        {
+            HitShip(ships2, enemy_ships_remaining, col, row, map_shot2);
+        }
+
+        state = GameState();
+        if (state != GAME_CONTINUES)
+        {
+            break;
+        }
+
         RandomShooting();
     }
 
     RevealSurroundings(0, 0, 10, 10, map_shot2);
     Draw();
-    printf("Congrats bro u won\n");
-    
+
+    if (state == PLAYER_WON)
+    {
+        printf("Congrats! You sunk the enemy fleet.\n");
+    }
+    else if (state == AI_WON)
+    {
+        printf("The computer sunk your fleet. Better luck next time.\n");
+    }
+
     return 0;
 }
 
